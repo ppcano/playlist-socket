@@ -1,0 +1,10 @@
+node_modules
+tmp
+NERD_tre*
+lib-cov
+*.pid
+*.log
+*.swp
+*.sock
+*.gz
+*.config.json
