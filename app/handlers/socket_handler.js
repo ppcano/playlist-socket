@@ -1,4 +1,3 @@
-
 var EventEmitter = require('events').EventEmitter
  , io = require('socket.io')
  , index = require('../../index')
@@ -9,8 +8,13 @@ var EventEmitter = require('events').EventEmitter
 // Handle real time rooms ( client connected ) depending on room state ( known through RoomEvents )
 // Delegates the logic/conditions to push data to triggerKlass ( default: RoomEventTrigger )
 // Responsable of pushing data to the clients ( DB Access ) depending on the trigger events
-// TODO: better configure methods [ RequestTrackClient by default is inefficient ]
-// TODO: see a correct/testeable way to implement track_client ( decoupling )
+ //
+ // load rooms when
+ //   - add room event
+ //   - client init with all the rooms
+ //   - when received an event in a missing room require the new room
+// TODO: var that this, can be substitued by global handler 
+// errors: will go to
 function SocketHandler ( socketPort, auth, track_client, trigger_klass, trigger_options ) {
 
   this.trigger_options = trigger_options;
@@ -21,8 +25,11 @@ function SocketHandler ( socketPort, auth, track_client, trigger_klass, trigger_
 
   this.triggers = {};
 
-  var port = socketPort || 8080; // OJO: browser has policy to connect to 80/8080
-	this.manager = io.listen( port );
+
+  //console.log( port );
+	this.manager = io.listen( socketPort );
+
+  console.log(' ***** socket listening at '+ socketPort );
 
   var that = this;
 
@@ -61,18 +68,9 @@ function SocketHandler ( socketPort, auth, track_client, trigger_klass, trigger_
   this.manager.configure( function (){
 
     this.set('authorization', function (handshakeData, callback) {
+      console.log( 'auth..');
       auth( handshakeData, callback, that.triggers ); 
 
-      // what's up when a room is not available, should ask to the service......
-      /*
-      authorization(handshakeData, callback, triggers);
-
-      var room_id = handshakeData.query.room;
-      var authorized = this.triggers[room_id]!=undefined;
-      var error = authorized ? undefined : 'room is not available';
-
-      callback(error, authorized);  
-      */
     });
 
   });
@@ -109,13 +107,17 @@ SocketHandler.prototype.close = function ( ) {
 // create a room, which is a requirements for the authorization process
 SocketHandler.prototype.add_room = function ( room_id, tracks ) {
 
-  if ( this.triggers[room_id] ) { 
+  console.log('add room ' + room_id + ' with ' + tracks.length + ' tracks ' );
+  if ( this.triggers[room_id]  ) { 
 
     throw Error( 'adding room (' + room_id + ') already exists' );
 
+  } if ( !tracks.length ) { 
+
+    throw Error( 'adding room (' + room_id + ') has no tracks' );
+
   } else {
 
-  //console.log('*** Adding Room ' + room_id + ' with ' + tracks.length + ' tracks ' );
 
     this.manager
       .of('/'+room_id)
@@ -134,7 +136,6 @@ SocketHandler.prototype.add_room = function ( room_id, tracks ) {
           
           //without namespaces
           //that.manager.sockets.in(id).emit('trigger', tracks );
-          
           that.manager.of('/'+id).emit('trigger', tracks );
 
         });
@@ -143,6 +144,7 @@ SocketHandler.prototype.add_room = function ( room_id, tracks ) {
 
     this.triggers[room_id] = trigger;
 
+
   }
 
 };
@@ -150,6 +152,7 @@ SocketHandler.prototype.add_room = function ( room_id, tracks ) {
 // disconnect all the sockets in the room
 SocketHandler.prototype.delete_room = function ( room_id ) {
 
+  console.log('delete ' + room_id );
   if ( !this.triggers[room_id] ) { 
 
 		throw Error( 'delteing room (' + room_id + ') not exists' );
@@ -175,50 +178,59 @@ SocketHandler.prototype.delete_room = function ( room_id ) {
 };
 
 // tracks events
-//
-
 SocketHandler.prototype.toogle = function ( room_id, track_id ) {
 
-  if ( !this.triggers[room_id] ) { 
+  console.log('toogle ' + room_id + ' track ' + track_id);
 
-		throw Error( 'action in room (' + room_id + ') not exists' );
-
-	} else {
-
-   this.triggers[room_id].toogle( track_id );
-
-	}
+  _perform_when_room_is_present(room_id, this, function(handler){
+       handler.triggers[room_id].toogle( track_id );
+  });
 
 } 
 
 SocketHandler.prototype.incr_action = function ( room_id, track_id, action ) {
 
-  if ( !this.triggers[room_id] ) { 
+  console.log('action ' + room_id + ' track ' + track_id+ ' action ' + action);
 
-		throw Error( 'action in room (' + room_id + ') not exists' );
-
-	} else {
-
-		this.triggers[room_id].incr_action( track_id, action );
-
-	}
-	
+  _perform_when_room_is_present(room_id, this, function(handler){
+      handler.triggers[room_id].incr_action( track_id, action );
+  });
 
 } 
 
 SocketHandler.prototype.reset = function ( room_id, track_id ) {
 
-  if ( !this.triggers[room_id] ) { 
+  console.log('reset ' + room_id + ' track ' + track_id);
 
-		throw Error( 'action in room (' + room_id + ') not exists' );
+  _perform_when_room_is_present(room_id, this, function(handler){
+      handler.triggers[room_id].reset( track_id );
+  });
 
-  } else {
-
-		this.triggers[room_id].reset( track_id );
-	}
 
 
 } 
+
+_perform_when_room_is_present = function ( room_id , handler , next ) {
+
+  if ( handler.triggers[room_id] ) {
+    next( handler );
+  } else {
+
+    handler.track_client.getAllTracks( room_id,  function(err, result){
+
+      if(err) throw err;
+
+      handler.add_room(room_id, result);
+
+      next( handler );
+
+    });
+
+  }
+
+
+} 
+
 
 //TODO: should be a working process to clean db items and removing
 //triggers on SocketHandler
@@ -232,3 +244,33 @@ module.exports = SocketHandler;
 //
 // create fails use cases. New methods for clients will be available
 // create a method that server sends push methods to clients, assuring that they are in rooms
+//
+      // what's up when a room is not available, should ask to the service......
+      /*
+      authorization(handshakeData, callback, triggers);
+
+      var room_id = handshakeData.query.room;
+      var authorized = this.triggers[room_id]!=undefined;
+      var error = authorized ? undefined : 'room is not available';
+
+      callback(error, authorized);  
+      */
+/*
+  if ( !this.triggers[room_id] ) { 
+
+    var that = this;
+    this._request_room(room_id, function(err){
+      if(err) throw err;
+      
+      if ( that.triggers[room_id] ) {
+        that.triggers[room_id].incr_action( track_id, action );
+      }
+    }); 
+		//throw Error( 'action in room (' + room_id + ') not exists' );
+
+	} else {
+
+		this.triggers[room_id].incr_action( track_id, action );
+
+	}
+*/	
